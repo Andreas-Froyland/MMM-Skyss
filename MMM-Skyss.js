@@ -19,7 +19,8 @@ Module.register("MMM-Skyss",{
         animationSpeed: 0,             // How fast the animation changes when updating mirror (default is 0 second)
         fade: true,                    // Set this to true to fade list from light to dark. (default is true)
         fadePoint: 0.25,               // Start on 1/4th of the list.
-        useRealtime: true              // Whether to use realtime data from Skyss
+        useRealtime: true,             // Whether to use realtime data from Skyss
+        debug: false                   // Enable verbose debug logging
     },
 
     getStyles: function () {
@@ -38,7 +39,8 @@ Module.register("MMM-Skyss",{
     },
 
     start: function() {
-        console.log(this.translate("STARTINGMODULE") + ": " + this.name);
+        console.log(this.translate("STARTINGMODULE") + ": " + this.name); // always shown
+        if (this.config.debug) console.log("[MMM-Skyss][DEBUG] Configuration:", this.config);
 
         this.journeys = [];
         this.previousJourneys = [];
@@ -50,6 +52,8 @@ Module.register("MMM-Skyss",{
         } else {
             this.config.timeFormat = "h:mm A";
         }
+
+        if (this.config.debug) console.log("[MMM-Skyss][DEBUG] Time format set to:", this.config.timeFormat);
 
         // Just do an initial poll. Otherwise we have to wait for the serviceReloadInterval
         self.startPolling();
@@ -102,19 +106,27 @@ Module.register("MMM-Skyss",{
 
     startPolling: function() {
         var self = this;
+        if (this.config.debug) console.log("[MMM-Skyss][DEBUG] Starting poll for departure data");
 
-        var promise = new Promise((resolv) => {
+        var promise = new Promise((resolve) => {
             this.getStopInfo(this.config.stops, function(err, result) {
-                resolv(result);
+                if (err && self.config.debug) {
+                    console.log("[MMM-Skyss][DEBUG] Error getting stop info:", err);
+                }
+                resolve(result || []);
             });
         });
 
         promise.then(function(promiseResults) {
+            if (self.config.debug) console.log("[MMM-Skyss][DEBUG] Promise resolved with", promiseResults ? promiseResults.length : 0, "results");
+            
             if (promiseResults.length > 0) {
                 var allJourneys = [];
                 for(var i=0; i < promiseResults.length; i++) {
                     allJourneys = allJourneys.concat(promiseResults[i])
                 }
+
+                if (self.config.debug) console.log("[MMM-Skyss][DEBUG] Total journeys before sorting:", allJourneys.length);
 
                 allJourneys.sort(function(a,b) {
                     var dateA = new Date(a.time.Timestamp);
@@ -123,6 +135,11 @@ Module.register("MMM-Skyss",{
                 });
 
                 self.journeys = allJourneys.slice(0, self.config.maxItems);
+
+                if (self.config.debug) {
+                    console.log("[MMM-Skyss][DEBUG] Displaying", self.journeys.length, "journeys");
+                    console.log("[MMM-Skyss][DEBUG] First journey:", self.journeys[0]);
+                }
 
                 self.updateDom();
             }
@@ -133,19 +150,9 @@ Module.register("MMM-Skyss",{
         var self = this;
 
         var HttpClient = function() {
-            this.get = function(requestUrl, requestCallback) {
-                // var httpRequest = new XMLHttpRequest();
-                // httpRequest.onreadystatechange = function() {
-                //     if (httpRequest.readyState == 4 && httpRequest.status == 200){
-                //         requestCallback(httpRequest.responseText);
-                //     }
-                // };
-
-                // httpRequest.open("GET", requestUrl, true);
-                // httpRequest.setRequestHeader("Authorization", "");
-                // httpRequest.send(null);
+            this.get = function(requestBody, requestCallback) {
                 self.requests.push(requestCallback);
-                self.sendSocketNotification("getstop", requestUrl);
+                self.sendSocketNotification("getstop", {body: requestBody, debug: self.config.debug});
             }
         }
     
@@ -168,45 +175,95 @@ Module.register("MMM-Skyss",{
             
                 //Time is next day
                 if (realTime.isBefore(moment())) {
-                	realTime.add(1, 'day');
+                    realTime.add(1, 'day');
                 }
             }
             return realTime;
         };
-        
 
-        // var shouldAddPlatform = function(platform, platformFilter) {
-        //     if (platformFilter == null || platformFilter.length == 0) { return true; } // If we don't add any interesting platformFilter, then we asume we'll show all
-        //     for(var i=0; i < platformFilter.length; i++) {
-        //         if (platformFilter[i] === platform) { return true; }
-        //     }
+        var buildRequestBody = function() {
+            // Helper function to add NSR prefix if not present
+            const normalizeId = function(id, type) {
+                if (!id) return undefined;
+                if (id.startsWith && id.startsWith('NSR:')) return id;
+                return 'NSR:' + type + ':' + id;
+            };
 
-        //     return false;
-        // };
+            const stopGroupsMap = {}; // key = groupId
 
-        // var departureUrl = function() {
-        //     var dateParam = "";
-        //     if (stopItem.timeToThere) {
-        //         var min = stopItem.timeToThere;
-        //         var timeAhead = moment(moment.now()).add(min, "minute").format().substring(0, 16);
-        //         console.log("Looking for journeys " + min + " minutes ahead in time.");
-        //         dateParam = "?datetime=" + timeAhead;
-        //     } else {
-        //         console.log("Looking for current journeys");
-        //     }
+            for (let i = 0; i < stopItems.length; i++) {
+                const item = stopItems[i];
 
-        //     return "http://reisapi.ruter.no/StopVisit/GetDepartures/" + stopItem.stopId + dateParam;
-        // };
+                // Support alternative grouped config form: { stopGroupId: "32383", stopIds: ["55869", "55870"] }
+                if (item.stopIds && item.stopGroupId) {
+                    const groupId = normalizeId(item.stopGroupId, 'StopPlace');
+                    if (!groupId) {
+                        console.warn('[MMM-Skyss] Skipping grouped entry without valid stopGroupId', item);
+                        continue;
+                    }
+                    if (!stopGroupsMap[groupId]) {
+                        stopGroupsMap[groupId] = { id: groupId, stops: [] };
+                    }
+                    item.stopIds.forEach(rawStopId => {
+                        const stopId = normalizeId(rawStopId, 'Quay');
+                        if (stopId) {
+                            stopGroupsMap[groupId].stops.push({ id: stopId });
+                        } else {
+                            console.warn('[MMM-Skyss] Skipping invalid stopId in grouped entry', rawStopId);
+                        }
+                    });
+                    continue; // proceed to next config item
+                }
 
-        var stopUrl = function() {
-            return "/public/departures?Hours=12&StopIdentifiers=" + stopItems.map(stopItem => stopItem.stopId).join();
+                // Original form: { stopId: "55863", stopGroupId: "32379" }
+                const rawGroupId = item.stopGroupId;
+                const rawStopId = item.stopId;
+
+                if (!rawGroupId) {
+                    console.warn('[MMM-Skyss] Missing stopGroupId for stop entry. This stop will be skipped:', item);
+                    continue;
+                }
+                if (!rawStopId) {
+                    console.warn('[MMM-Skyss] Missing stopId for stop entry. This stop will be skipped:', item);
+                    continue;
+                }
+
+                const groupId = normalizeId(rawGroupId, 'StopPlace');
+                const stopId = normalizeId(rawStopId, 'Quay');
+
+                if (!stopGroupsMap[groupId]) {
+                    stopGroupsMap[groupId] = { id: groupId, stops: [] };
+                }
+                stopGroupsMap[groupId].stops.push({ id: stopId });
+            }
+
+            const stopGroupsArray = Object.values(stopGroupsMap);
+
+            // Additional safeguard: remove groups without id or with no stops
+            const filtered = stopGroupsArray.filter(g => g.id && g.stops.length > 0);
+
+            if (filtered.length === 0) {
+                if (self.config.debug) console.log('[MMM-Skyss][DEBUG] No valid stop groups constructed from configuration. Check your stops config.');
+            } else if (self.config.debug) {
+                console.log('[MMM-Skyss][DEBUG] Constructed request body with', filtered.length, 'group(s).');
+                filtered.forEach(g => console.log('[MMM-Skyss][DEBUG] Group', g.id, 'stops:', g.stops.map(s => s.id).join(', ')));
+            }
+
+            return { stopGroups: filtered };
         };
 
         var client = new HttpClient();
 
-        client.get(stopUrl(), function(stopResponse) {
+        client.get(buildRequestBody(), function(stopResponse) {
+            if (self.config.debug) console.log("[MMM-Skyss][DEBUG] Parsing API response");
+            
             var departure = JSON.parse(stopResponse);
             var times = departure.PassingTimes;
+
+            if (self.config.debug) {
+                console.log("[MMM-Skyss][DEBUG] Received", times.length, "passing times");
+                console.log("[MMM-Skyss][DEBUG] Available stops:", Object.keys(departure.Stops));
+            }
 
             var allStopItems = [];
 
@@ -218,23 +275,27 @@ Module.register("MMM-Skyss",{
                 var realtimeStamp = processSkyssDisplaytime(journey.DisplayTime);
                 if ( self.config.useRealtime && moment.isMoment(realtimeStamp) ) {
                     timestamp = realtimeStamp.toISOString();
+                    if (self.config.debug) console.log("[MMM-Skyss][DEBUG] Using realtime for", journey.RoutePublicIdentifier, ":", journey.DisplayTime, "->", timestamp);
                 } else {
                     timestamp = journey.AimedTime;
+                    if (self.config.debug) console.log("[MMM-Skyss][DEBUG] Using scheduled time for", journey.RoutePublicIdentifier, ":", timestamp);
                 }
                 
                 allStopItems.push({
                     stopId: journey.StopIdentifier,
-                    stopName: stop.PlaceDescription,
+                    stopName: stop.Description,
                     lineName: journey.RoutePublicIdentifier,
                     destinationName: journey.TripDestination,
-                    service: stop.ServiceModes[0],
+                    service: journey.ServiceMode,
                     time: {
                         Timestamp: timestamp,
                         Status: journey.Status,
                     },
-                    platform: journey.Platform
+                    platform: journey.Platform || ""
                 });
             }
+            
+            if (self.config.debug) console.log("[MMM-Skyss][DEBUG] Processed", allStopItems.length, "stop items");
             callback(null, allStopItems);
         })
     },
@@ -343,24 +404,27 @@ Module.register("MMM-Skyss",{
         var diff = tti - now;
         var min = Math.floor(diff/60000);
 
-        if (min == 0) {
-            return this.translate("NOW");
-        } else if (min == 1) {
-            return this.translate("1MIN");
-        } else if (min < this.config.humanizeTimeTreshold) {
-            return min + " " + this.translate("MINUTES");
-        } else {
-            return tti.getHours() + ":" + ("0" + tti.getMinutes()).slice(-2);
+        if (this.config.humanizeTimeTreshold != 0) {
+            if (min == 0) {
+                return this.translate("NOW");
+            } else if (min == 1) {
+                return this.translate("1MIN");
+            } else if (min < this.config.humanizeTimeTreshold) {
+                return min + " " + this.translate("MINUTES");
+            }
         }
+        return tti.getHours() + ":" + ("0" + tti.getMinutes()).slice(-2);
     },
 
     socketNotificationReceived: function(notification, payload) {
         var self = this;
-        Log.log(this.name + " recieved a socket notification: " + notification);
+        if (this.config.debug) Log.log(this.name + " recieved a socket notification: " + notification);
         if (notification == "getstop") {
             if (payload.err) {
+                if (this.config.debug) console.log("[MMM-Skyss][DEBUG] Socket notification error:", payload.err);
                 throw payload.err;
             } else {
+                if (this.config.debug) console.log("[MMM-Skyss][DEBUG] Socket notification received successfully");
                 self.requests.shift()(payload.response);
             }
         }

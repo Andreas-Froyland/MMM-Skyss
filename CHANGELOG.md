@@ -1,5 +1,15 @@
 # MMM-Skyss Change Log
 
+## [2.0.0] - 2025-10-08
+- Migrate to Skyss API v3 using POST `https://skyss.giantleap.no/v3/departures` with JSON body
+- New request body builder with grouped `stopGroups` and automatic `NSR:` ID prefixing
+- Support alternative grouped configuration: `{ stopGroupId, stopIds: [] }`
+- Node helper now performs HTTPS POST and logs status/preview for debugging
+- Add `debug` configuration option for verbose logging across frontend and helper
+- Realtime time parsing from `DisplayTime` with fallback to scheduled `AimedTime`
+- Use `journey.ServiceMode` and `stop.Description`; safe platform handling
+- Breaking change: each stop now requires a `stopGroupId` (StopPlace) in addition to `stopId` (Quay) unless using grouped form
+
 ## [1.3.0s1.1.1] - 2018-01-18
 - Temporary fix on an update issue which needed to be addressed quickly.
 

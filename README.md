@@ -4,7 +4,7 @@
 ![1](images/MMM-Skyss-1.png)
 ![2](images/MMM-Skyss-2.png) 
 
-Current version is s1.3.0 See [changelog](CHANGELOG.md "Version history") for version history.
+Current version is 2.0.0 See [changelog](CHANGELOG.md "Version history") for version history.
 
 ## Installation
 
@@ -15,7 +15,7 @@ cd ~/MagicMirror/modules
 
 Clone the repository:
 ````bash
-git clone https://github.com/PabloDons/MMM-Skyss.git
+git clone https://github.com/AndreasFroyland/MMM-Skyss.git
 ````
 
 Go to the modules folder:
@@ -39,15 +39,19 @@ Add the module to the modules array in the `config/config.js` file by adding the
 		maxItems: 8,
 		stops: [
 			{
-				stopId: "12011092"
+				stopId: "55861",
+				stopGroupId: "32379"
 			},
 			{
-				stopId: "12011022"
-			},
+				stopId: "55863",
+				stopGroupId: "32379"
+			}
 		]
 	}
 },
 ```
+
+**Note:** You can use either just the numeric IDs (e.g., `"55861"`) or the full IDs with prefixes (e.g., `"NSR:Quay:55861"`). The module will automatically add the `NSR:Quay:` and `NSR:StopPlace:` prefixes if needed.
 
 # Configuration options
 
@@ -63,33 +67,122 @@ maxNameLength | Some stop names can be very long and ruin the layout of the modu
 showPlatform | Set this to true to get the names of the platforms. Set this to true to check the name of the platform if you need to filter  | false
 humanizeTimeTreshold | If time to next journey is below this value, it will be displayed as "x minutes" instead of time | 15 
 serviceReloadInterval | Refresh rate in MS for how often we call Skyss's web service. NB! Don't set it too low! | 30000 
-timeReloadInterval | Refresh rate how often we check if we need to update the time in the GUI | 1000 
 animationSpeed | How fast the animation changes when updating mirror - in milliseconds | 0  
 fade | Set this to true to fade list from light to dark | true  
 fadePoint | Start fading on 1/4th of the list | 0.25
+useRealtime | Use realtime (DisplayTime) when available instead of only scheduled time | true
+debug | Enable verbose console logging for troubleshooting | false
+
+## Skyss API v3 Migration (IMPORTANT)
+The module now uses the new Skyss API v3 endpoint:
+
+Endpoint: https://skyss.giantleap.no/v3/departures (HTTP POST)
+
+Old (deprecated) GET requests with `/public/departures?Hours=...&StopIdentifiers=...` are no longer used.
+
+### New Request Body Format
+The request body sent to the API looks like this:
+```json
+{
+  "stopGroups": [
+    {
+      "id": "NSR:StopPlace:32379",
+      "stops": [
+        { "id": "NSR:Quay:55861" },
+        { "id": "NSR:Quay:55863" }
+      ]
+    }
+  ]
+}
+```
+The module automatically builds this structure by grouping all configured stops by their `stopGroupId`.
+
+### ID Shortcuts
+You may provide either:
+- Full IDs: `NSR:Quay:55861` / `NSR:StopPlace:32379`
+- Numeric only: `55861` / `32379` (prefixes are auto-added)
+
+### Alternative Grouped Configuration
+Instead of listing each quay as a separate object you can group them:
+```javascript
+stops: [
+  {
+    stopGroupId: "32379",
+    stopIds: ["55861", "55863"]
+  }
+]
+```
+This produces the exact same request body as listing each quay separately.
 
 ## Stops
-You have to configure at least one stop. The module uses the same stop ID's used in the [avgangsvisning](https://avgangsvisning.skyss.no/) mode on skyss' website. just go to [this link](https://avgangsvisning.skyss.no/) and select the stops you want (different directions of the same stop each have their own stop). Fill out the rest of the form randomly so the website generates a url. In this url you'll find each stop as a data argument separated by commas. Example:
-https://avgangsvisning.skyss.no/board/#/?stops= **12011093,12011092,12011022,12011021** &viewFreq=10000&terminal=true&colors=dark&name=name
+You have to configure at least one stop. The module now uses the new Skyss v3 API which requires both a `stopId` (Quay ID) and a `stopGroupId` (StopPlace ID).
+
+### How to find Stop (Quay) and Stop Group (StopPlace) IDs
+1. Go to https://avgangsvisning.skyss.no/
+2. Add the stop(s) you are interested in so the live board loads.
+3. Open your browser Developer Tools (F12) and select the Network tab.
+4. (Optional) Reload the page or wait for data refresh.
+5. Filter network requests by the term `departures` or `/v3/departures`.
+6. Click the POST request to `https://skyss.giantleap.no/v3/departures`.
+7. In the Request Payload you will see a JSON body containing:
+   - `stopGroups` array
+   - Each object has an `id` (this is the `StopPlace` ID)
+   - Inside `stops` you find each `Quay` with its `id`.
+8. Copy the numeric parts or the full IDs for use in your configuration.
+
+Example extracted from payload:
+```json
+{
+  "stopGroups": [
+    {
+      "id": "NSR:StopPlace:32379",
+      "stops": [ { "id": "NSR:Quay:55861" }, { "id": "NSR:Quay:55863" } ]
+    }
+  ]
+}
+```
+Configuration using numeric shortcut:
+```javascript
+stops: [
+  { stopId: "55861", stopGroupId: "32379" },
+  { stopId: "55863", stopGroupId: "32379" }
+]
+```
+Grouped form equivalent:
+```javascript
+stops: [
+  { stopGroupId: "32379", stopIds: ["55861", "55863"] }
+]
+```
 
 Stop option | Comment 
 ---|---
-stopId | Id of stop
-<!-- platformFilter | The names of the platforms you want to see. Please temporarely enable `showPlatformName` in the module configuration to get the correct platform names before you configure this option. If these names aren't valid, nothing will be displayed. -->
-<!-- timeToThere | How long time in minutes does it take for you to get to this stop? It's no point showing journeys that till go in 1 minute if it takes you 5 minutes to get there... -->
+stopId | Numeric Quay ID (e.g., `"55861"`) or full ID (e.g., `"NSR:Quay:55861"`)
+stopIds | (Alternative grouped config) Array of quay IDs belonging to the same stopGroupId
+stopGroupId | Numeric StopPlace ID (e.g., `"32379"`) or full ID (e.g., `"NSR:StopPlace:32379"`)
+
+**Note:** Multiple quays usually share the same StopPlace. Always pair every quay with the correct stopGroupId or use the grouped form.
+
+## Debugging
+Set `debug: true` in the module config to print:
+- Built request body & grouped stop structure
+- API response status (in node helper)
+- Number of passing times returned
+- Realtime vs scheduled selection per journey
 
 Example:
+```javascript
+{
+  module: 'MMM-Skyss',
+  position: 'top_left',
+  config: {
+    debug: true,
+    maxItems: 8,
+    stops: [ { stopGroupId: '32379', stopIds: ['55861','55863'] } ]
+  }
+}
 ```
-stops: [
-	{
-		stopId: "12011092"
-	},
-	{
-		stopId: "12011022"
-	}
-]
 
-``` 
 ## Translations
 
 This modules is translated to the following languages:
@@ -101,9 +194,6 @@ en (English) | Cato Antonsen
 
 If you add other languages, please make a PR or drop me a line!
 
-# Future enhanchements
-
-1. ~~Generate a new auth token for each client~~
+# Future enhancements
 1. Show deviations
-1. ~~Add filter for platforms~~ (Each platform has it's own stop now. Simply don't include it)
 1. Add filter for departures that are too close to make
